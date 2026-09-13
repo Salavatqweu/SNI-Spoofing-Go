@@ -16,6 +16,11 @@ type ProxyConfig struct {
 	SNIChunk        int    `json:"sniChunk"`
 }
 
+type SniPreset struct {
+	FakeSNI  string `json:"fakeSni"`
+	Upstream string `json:"upstream"`
+}
+
 type ProxyStatus struct {
 	Running    bool   `json:"running"`
 	Testing    bool   `json:"testing"`
