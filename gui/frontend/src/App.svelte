@@ -1,28 +1,25 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { _, locale } from "svelte-i18n";
-  import {
-    GetDefaultConfig,
-    UTLSPresets,
-    InjectorModes,
-    Start,
-    Stop,
-    Status,
-    RunTest,
-  } from "../wailsjs/go/main/App.js";
+  import { GetDefaultConfig, UTLSPresets, InjectorModes, Start, Stop, Status, RunTest, GetSniPresets, SaveSniPreset, DeleteSniPreset } from "../wailsjs/go/main/App.js";
   import { EventsOn, EventsOff } from "../wailsjs/runtime/runtime.js";
   import type { main } from "../wailsjs/go/models";
-
   import { appendLog, resetLogIds, type LogEntry } from "./logs";
 
   type ProxyConfig = main.ProxyConfig;
   type ProxyStatus = main.ProxyStatus;
   type TestResult = main.TestResult;
   type TestSummary = main.TestSummary;
+  type SniPreset = main.SniPreset;
 
   let cfg: ProxyConfig | null = null;
   let utlsList: string[] = [];
   let injectorList: string[] = [];
+  let presets: SniPreset[] = [];
+  let selectedPreset = "";
+  let presetFakeSNI = "";
+  let presetUpstream = "";
+  let editingPreset = false;
   let status: ProxyStatus = { running: false, testing: false, listenAddr: "" };
   let logs: LogEntry[] = [];
   let testResults: TestResult[] = [];
@@ -30,687 +27,142 @@
   let busy = false;
   let rightPanelTab: "logs" | "results" = "logs";
 
-  function pushLog(entry: Omit<LogEntry, "id">) {
-    logs = appendLog(logs, entry);
-  }
+  function pushLog(entry: Omit<LogEntry, "id">) { logs = appendLog(logs, entry); }
+  function pushError(err: unknown) { pushLog({ ts: Date.now(), level: "error", message: err instanceof Error ? err.message : String(err) }); }
 
   onMount(async () => {
-    cfg = await GetDefaultConfig();
-    utlsList = await UTLSPresets();
-    injectorList = await InjectorModes();
-    status = await Status();
-    EventsOn("log", (e: { level: string; message: string }) => {
-      pushLog({ ts: Date.now(), level: e.level, message: e.message });
-    });
-    EventsOn("status", (s: ProxyStatus) => {
-      status = s;
-    });
-    EventsOn("test_result", (row: TestResult) => {
-      testResults = [...testResults, row];
-    });
+    try {
+      cfg = await GetDefaultConfig();
+      utlsList = await UTLSPresets();
+      injectorList = await InjectorModes();
+      presets = await GetSniPresets();
+      status = await Status();
+      if (presets.length) selectPreset(presets[0]);
+    } catch (err) { pushError(err); }
+    EventsOn("log", (e: { level: string; message: string }) => pushLog({ ts: Date.now(), level: e.level, message: e.message }));
+    EventsOn("status", (s: ProxyStatus) => status = s);
+    EventsOn("test_result", (row: TestResult) => testResults = [...testResults, row]);
   });
 
-  onDestroy(() => {
-    EventsOff("log");
-    EventsOff("status");
-    EventsOff("test_result");
-  });
+  onDestroy(() => { EventsOff("log"); EventsOff("status"); EventsOff("test_result"); });
 
-  function pushError(err: unknown) {
-    let msg: string;
-    if (typeof err === "string") {
-      msg = err;
-    } else if (err instanceof Error) {
-      msg = err.message;
-    } else {
-      msg = String(err);
-    }
-    pushLog({ ts: Date.now(), level: "error", message: msg });
+  function selectPreset(p: SniPreset) {
+    selectedPreset = p.fakeSni;
+    presetFakeSNI = p.fakeSni;
+    presetUpstream = p.upstream;
+    editingPreset = false;
+    if (cfg) { cfg.fakeSni = p.fakeSni; cfg.connect = `${p.upstream}:443`; }
   }
 
-  function partialSummaryFromResults(results: TestResult[]): TestSummary {
-    let passed = 0;
-    let failed = 0;
-    for (const r of results) {
-      if (r.pass) passed++;
-      else failed++;
-    }
-    return {
-      preflight: testSummary?.preflight ?? {},
-      results,
-      passed,
-      failed,
-    };
+  function onPresetSelect(ev: Event) {
+    const value = (ev.target as HTMLSelectElement).value;
+    const p = presets.find(x => x.fakeSni === value);
+    if (p) selectPreset(p);
+  }
+
+  function newPreset() {
+    selectedPreset = ""; presetFakeSNI = ""; presetUpstream = ""; editingPreset = true;
+  }
+
+  function editSelectedPreset() {
+    if (!selectedPreset) return;
+    editingPreset = true;
+  }
+
+  async function savePreset() {
+    if (!presetFakeSNI.trim() || !presetUpstream.trim()) return;
+    try {
+      presets = await SaveSniPreset({ fakeSni: presetFakeSNI.trim(), upstream: presetUpstream.trim() });
+      const p = presets.find(x => x.fakeSni.toLowerCase() === presetFakeSNI.trim().toLowerCase());
+      if (p) selectPreset(p);
+    } catch (err) { pushError(err); }
+  }
+
+  async function deleteSelectedPreset() {
+    if (!selectedPreset) return;
+    try {
+      presets = await DeleteSniPreset(selectedPreset);
+      selectedPreset = ""; presetFakeSNI = ""; presetUpstream = "";
+      if (presets.length) selectPreset(presets[0]);
+    } catch (err) { pushError(err); }
   }
 
   async function onStart() {
-    if (!cfg) return;
-    busy = true;
-    rightPanelTab = "logs";
-    try {
-      await Start(cfg);
-    } catch (err) {
-      pushError(err);
-    } finally {
-      busy = false;
-    }
+    if (!cfg) return; busy = true; rightPanelTab = "logs";
+    try { await Start(cfg); } catch (err) { pushError(err); } finally { busy = false; }
   }
-
   async function onStop() {
-    busy = true;
-    try {
-      await Stop();
-    } catch (err) {
-      pushError(err);
-    } finally {
-      busy = false;
-    }
+    busy = true; try { await Stop(); } catch (err) { pushError(err); } finally { busy = false; }
   }
-
   async function onRunTest() {
-    if (!cfg) return;
-    busy = true;
-    // Clear any prior table up-front so re-running surfaces incremental
-    // rows from the "test_result" event stream as they arrive, rather
-    // than holding the old table on screen until RunTest resolves.
-    testResults = [];
-    testSummary = null;
-    rightPanelTab = "results";
-    try {
-      testSummary = await RunTest(cfg);
-      // If the event stream missed anything (e.g. listener attached late),
-      // the final summary is still the source of truth for the row set.
-      if (testSummary.results && testSummary.results.length > testResults.length) {
-        testResults = testSummary.results;
-      }
-    } catch (err) {
-      if (testResults.length > 0) {
-        testSummary = partialSummaryFromResults(testResults);
-      } else {
-        pushError(err);
-        testSummary = null;
-        testResults = [];
-      }
-    } finally {
-      busy = false;
-    }
+    if (!cfg) return; busy = true; testResults = []; testSummary = null; rightPanelTab = "results";
+    try { testSummary = await RunTest(cfg); if (testSummary.results?.length > testResults.length) testResults = testSummary.results; }
+    catch (err) { pushError(err); } finally { busy = false; }
   }
-
-  function onLocaleChange(ev: Event) {
-    const sel = ev.target as HTMLSelectElement;
-    locale.set(sel.value);
-  }
-
-  function clearLogs() {
-    resetLogIds();
-    logs = [];
-  }
-
-  // Log timestamps stay Western/LTR even when the UI is Persian (RTL).
-  const logTimeFormatter = new Intl.DateTimeFormat("en", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  function formatTime(ts: number): string {
-    return logTimeFormatter.format(new Date(ts));
-  }
-
-  // Auto-scroll the log panel will be re-added with a Svelte 5-correct
-  // pattern (likely a tick-based effect inside onMount) — the prior $: form
-  // silently aborted component mount in Svelte 5 dev mode.
+  function onLocaleChange(ev: Event) { locale.set((ev.target as HTMLSelectElement).value); }
+  function clearLogs() { resetLogIds(); logs = []; }
+  const logTimeFormatter = new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  function formatTime(ts: number): string { return logTimeFormatter.format(new Date(ts)); }
 </script>
 
 <header class="topbar">
-  <div class="brand">
-    <div class="brand-title">{$_("app.title")}</div>
-    <div class="brand-subtitle">{$_("app.subtitle")}</div>
-  </div>
+  <div><div class="brand-title">{$_("app.title")}</div><div class="brand-subtitle">{$_("app.subtitle")}</div></div>
   <div class="topbar-spacer"></div>
-  <div class="status-pill" class:running={status.running} class:testing={status.testing}>
-    <span class="dot"></span>
-    {#if status.testing}
-      {$_("status.testing")}
-    {:else if status.running}
-      {$_("status.running")}
-    {:else}
-      {$_("status.stopped")}
-    {/if}
-    {#if status.running && status.listenAddr}
-      <span class="status-detail">{status.listenAddr}</span>
-    {/if}
-  </div>
-  <div class="lang-switch">
-    <label for="lang">{$_("lang.label")}</label>
-    <select
-      id="lang"
-      value={$locale}
-      on:change={onLocaleChange}
-    >
-      <option value="en">English</option>
-      <option value="fa">فارسی</option>
-    </select>
-  </div>
+  <div class="status-pill" class:running={status.running} class:testing={status.testing}><span class="dot"></span>{status.testing ? $_("status.testing") : status.running ? $_("status.running") : $_("status.stopped")}{#if status.running && status.listenAddr}<span class="status-detail">{status.listenAddr}</span>{/if}</div>
+  <div class="lang-switch"><label for="lang">{$_("lang.label")}</label><select id="lang" value={$locale} on:change={onLocaleChange}><option value="en">English</option><option value="fa">فارسی</option></select></div>
 </header>
 
 <main class="layout">
   <section class="panel">
     {#if cfg}
       <div class="section-title">{$_("form.section_connection")}</div>
+      <div class="preset-box">
+        <div class="preset-row">
+          <label class="preset-select"><span>{$_("preset.select")}</span><select value={selectedPreset} on:change={onPresetSelect}><option value="">{$_("preset.choose")}</option>{#each presets as p}<option value={p.fakeSni}>{p.fakeSni} → {p.upstream}</option>{/each}</select></label>
+          <div class="preset-actions"><button class="btn" on:click={newPreset}>{$_("preset.add")}</button><button class="btn" on:click={editSelectedPreset} disabled={!selectedPreset}>{$_("preset.edit")}</button><button class="btn danger" on:click={deleteSelectedPreset} disabled={!selectedPreset}>{$_("preset.delete")}</button></div>
+        </div>
+        {#if editingPreset}
+          <div class="preset-editor">
+            <label><span>{$_("preset.fake_sni")}</span><input type="text" bind:value={presetFakeSNI} placeholder="example.com" /></label>
+            <label><span>{$_("preset.upstream")}</span><input type="text" bind:value={presetUpstream} placeholder="1.2.3.4" /></label>
+            <button class="btn primary" on:click={savePreset}>{$_("preset.save")}</button>
+          </div>
+        {/if}
+      </div>
       <div class="grid-2">
-        <label>
-          <span>{$_("form.listen")}</span>
-          <input type="text" bind:value={cfg.listen} placeholder="127.0.0.1:40443" />
-          <small>{$_("form.listen_help")}</small>
-        </label>
-        <label>
-          <span>{$_("form.connect")}</span>
-          <input type="text" bind:value={cfg.connect} placeholder="host:443" />
-          <small>{$_("form.connect_help")}</small>
-        </label>
-        <label>
-          <span>{$_("form.fake_sni")}</span>
-          <input type="text" bind:value={cfg.fakeSni} placeholder="hcaptcha.com" />
-          <small>{$_("form.fake_sni_help")}</small>
-        </label>
-        <label>
-          <span>{$_("form.utls")}</span>
-          <select bind:value={cfg.utls}>
-            {#each utlsList as p}
-              <option value={p}>{p}</option>
-            {/each}
-          </select>
-        </label>
+        <label><span>{$_("form.listen")}</span><input type="text" bind:value={cfg.listen} placeholder="127.0.0.1:40443" /><small>{$_("form.listen_help")}</small></label>
+        <label><span>{$_("form.connect")}</span><input type="text" bind:value={cfg.connect} placeholder="host:443" /><small>{$_("form.connect_help")}</small></label>
+        <label><span>{$_("form.fake_sni")}</span><input type="text" bind:value={cfg.fakeSni} placeholder="hcaptcha.com" /><small>{$_("form.fake_sni_help")}</small></label>
+        <label><span>{$_("form.utls")}</span><select bind:value={cfg.utls}>{#each utlsList as p}<option value={p}>{p}</option>{/each}</select></label>
       </div>
 
       <div class="section-title">{$_("form.section_injection")}</div>
       <div class="grid-2">
-        <label>
-          <span>{$_("form.injector")}</span>
-          <select bind:value={cfg.injector}>
-            {#each injectorList as m}
-              <option value={m}>{m}</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          <span>{$_("form.fake_repeat")}</span>
-          <input type="number" min="1" bind:value={cfg.fakeRepeat} />
-        </label>
-        <label>
-          <span>{$_("form.fake_delay")}</span>
-          <input type="number" min="0" bind:value={cfg.fakeDelayMs} />
-        </label>
-        <label>
-          <span>{$_("form.ack_timeout")}</span>
-          <input type="number" min="1" bind:value={cfg.ackTimeoutMs} />
-        </label>
+        <label><span>{$_("form.injector")}</span><select bind:value={cfg.injector}>{#each injectorList as m}<option value={m}>{m}</option>{/each}</select></label>
+        <label><span>{$_("form.fake_repeat")}</span><input type="number" min="1" bind:value={cfg.fakeRepeat} /></label>
+        <label><span>{$_("form.fake_delay")}</span><input type="number" min="0" bind:value={cfg.fakeDelayMs} /></label>
+        <label><span>{$_("form.ack_timeout")}</span><input type="number" min="1" bind:value={cfg.ackTimeoutMs} /></label>
       </div>
 
       <div class="section-title">{$_("form.section_fragmentation")}</div>
       <div class="grid-2">
-        <label class="checkbox-row">
-          <input type="checkbox" bind:checked={cfg.enableFragment} />
-          <span>{$_("form.enable_fragment")}</span>
-        </label>
-        <span></span>
-        <label>
-          <span>{$_("form.fragment_delay")}</span>
-          <input
-            type="number"
-            min="0"
-            bind:value={cfg.fragmentDelayMs}
-            disabled={!cfg.enableFragment}
-          />
-        </label>
-        <label>
-          <span>{$_("form.sni_chunk")}</span>
-          <input
-            type="number"
-            min="0"
-            bind:value={cfg.sniChunk}
-            disabled={!cfg.enableFragment}
-          />
-        </label>
+        <label class="checkbox-row"><input type="checkbox" bind:checked={cfg.enableFragment} /><span>{$_("form.enable_fragment")}</span></label><span></span>
+        <label><span>{$_("form.fragment_delay")}</span><input type="number" min="0" bind:value={cfg.fragmentDelayMs} disabled={!cfg.enableFragment} /></label>
+        <label><span>{$_("form.sni_chunk")}</span><input type="number" min="0" bind:value={cfg.sniChunk} disabled={!cfg.enableFragment} /></label>
       </div>
-
-      <div class="actions">
-        {#if status.running || status.testing}
-          <button class="btn danger" on:click={onStop} disabled={busy && !status.testing}>
-            {status.testing ? $_("actions.cancel_test") : $_("actions.stop")}
-          </button>
-        {:else}
-          <button class="btn primary" on:click={onStart} disabled={busy}>
-            {$_("actions.start")}
-          </button>
-        {/if}
-        <button
-          class="btn"
-          on:click={onRunTest}
-          disabled={busy || status.running || status.testing}
-        >
-          {$_("actions.test")}
-        </button>
-      </div>
+      <div class="actions">{#if status.running || status.testing}<button class="btn danger" on:click={onStop} disabled={busy && !status.testing}>{status.testing ? $_("actions.cancel_test") : $_("actions.stop")}</button>{:else}<button class="btn primary" on:click={onStart} disabled={busy}>{$_("actions.start")}</button>{/if}<button class="btn" on:click={onRunTest} disabled={busy || status.running || status.testing}>{$_("actions.test")}</button></div>
     {/if}
   </section>
 
   <section class="panel side-panel">
-    <div class="panel-header">
-      <div class="tab-bar" role="tablist" aria-label={$_("logs.title")}>
-        <button
-          type="button"
-          class="tab"
-          class:active={rightPanelTab === "logs"}
-          role="tab"
-          aria-selected={rightPanelTab === "logs"}
-          on:click={() => (rightPanelTab = "logs")}
-        >
-          {$_("panel.tab_logs")}
-        </button>
-        <button
-          type="button"
-          class="tab"
-          class:active={rightPanelTab === "results"}
-          role="tab"
-          aria-selected={rightPanelTab === "results"}
-          on:click={() => (rightPanelTab = "results")}
-        >
-          {$_("panel.tab_results")}
-          {#if testResults.length > 0}
-            <span class="tab-badge">{testResults.length}</span>
-          {/if}
-        </button>
-      </div>
-      {#if rightPanelTab === "logs"}
-        <button class="btn-link" on:click={clearLogs}>{$_("actions.clear_logs")}</button>
-      {/if}
-    </div>
-
-    {#if rightPanelTab === "logs"}
-      <div class="tab-panel log-list" role="tabpanel" dir="ltr">
-        {#if logs.length === 0}
-          <div class="empty">{$_("logs.empty")}</div>
-        {:else}
-          {#each logs as line (line.id)}
-            <div class="log-line log-{line.level}">
-              <span class="log-time">{formatTime(line.ts)}</span>
-              <span class="log-msg">{line.message}</span>
-            </div>
-          {/each}
-        {/if}
-      </div>
-    {:else}
-      <div class="tab-panel test-results" role="tabpanel">
-        {#if testSummary}
-          <div class="test-preflight">
-            {#if testSummary.preflight.externalIp}
-              <span>{$_("test.external_ip")}: {testSummary.preflight.externalIp}</span>
-            {/if}
-            {#if testSummary.preflight.internalIp}
-              <span>{$_("test.internal_ip")}: {testSummary.preflight.internalIp}</span>
-            {/if}
-            {#if testSummary.preflight.warning}
-              <span class="test-preflight-note">{testSummary.preflight.warning}</span>
-            {/if}
-            <span class="test-summary-counts">
-              {$_("test.pass")}: {testSummary.passed} / {$_("test.fail")}: {testSummary.failed}
-            </span>
-          </div>
-        {/if}
-        {#if testResults.length === 0}
-          <div class="empty">{$_("test.empty")}</div>
-        {:else}
-          <table class="test-table">
-            <thead>
-              <tr>
-                <th>{$_("test.col_utls")}</th>
-                <th>{$_("test.col_repeat")}</th>
-                <th>{$_("test.col_fragment")}</th>
-                <th>{$_("test.col_result")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each testResults as r}
-                <tr>
-                  <td>{r.utls}</td>
-                  <td>{r.fakeRepeat}</td>
-                  <td>{r.enableFragment ? $_("test.on") : $_("test.off")}</td>
-                  <td class:pass={r.pass} class:fail={!r.pass}>
-                    {r.pass ? $_("test.pass") : $_("test.fail")}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
-    {/if}
+    <div class="panel-header"><div class="tab-bar"><button type="button" class="tab" class:active={rightPanelTab === "logs"} on:click={() => rightPanelTab = "logs"}>{$_("panel.tab_logs")}</button><button type="button" class="tab" class:active={rightPanelTab === "results"} on:click={() => rightPanelTab = "results"}>{$_("panel.tab_results")}{#if testResults.length}<span class="tab-badge">{testResults.length}</span>{/if}</button></div>{#if rightPanelTab === "logs"}<button class="btn-link" on:click={clearLogs}>{$_("actions.clear_logs")}</button>{/if}</div>
+    {#if rightPanelTab === "logs"}<div class="tab-panel log-list" dir="ltr">{#if !logs.length}<div class="empty">{$_("logs.empty")}</div>{:else}{#each logs as line (line.id)}<div class="log-line"><span class="log-time">{formatTime(line.ts)}</span><span class="log-msg log-{line.level}">{line.message}</span></div>{/each}{/if}</div>{:else}<div class="tab-panel test-results">{#if testSummary}<div class="test-preflight"><span>{$_("test.pass")}: {testSummary.passed} / {$_("test.fail")}: {testSummary.failed}</span></div>{/if}{#if !testResults.length}<div class="empty">{$_("test.empty")}</div>{:else}<table class="test-table"><thead><tr><th>{$_("test.col_utls")}</th><th>{$_("test.col_repeat")}</th><th>{$_("test.col_fragment")}</th><th>{$_("test.col_result")}</th></tr></thead><tbody>{#each testResults as r}<tr><td>{r.utls}</td><td>{r.fakeRepeat}</td><td>{r.enableFragment ? $_("test.on") : $_("test.off")}</td><td class:pass={r.pass} class:fail={!r.pass}>{r.pass ? $_("test.pass") : $_("test.fail")}</td></tr>{/each}</tbody></table>{/if}</div>{/if}
   </section>
 </main>
 
 <style>
-  .topbar {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding-inline: 20px;
-    padding-block: 14px;
-    border-block-end: 1px solid var(--border);
-    background: var(--panel);
-  }
-  .brand-title {
-    font-weight: 700;
-    font-size: 16px;
-  }
-  .brand-subtitle {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .topbar-spacer {
-    flex: 1;
-  }
-  .status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding-inline: 12px;
-    padding-block: 6px;
-    border-radius: 999px;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    font-size: 13px;
-  }
-  .status-pill .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--muted);
-  }
-  .status-pill.running .dot {
-    background: var(--ok);
-    box-shadow: 0 0 0 3px rgba(61, 220, 151, 0.18);
-  }
-  .status-pill.testing .dot {
-    background: var(--warn);
-    box-shadow: 0 0 0 3px rgba(255, 214, 107, 0.18);
-  }
-  .status-detail {
-    color: var(--muted);
-    margin-inline-start: 6px;
-  }
-  .lang-switch {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .lang-switch label {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .lang-switch select {
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding-inline: 10px;
-    padding-block: 6px;
-  }
-
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(380px, 1fr) minmax(360px, 1fr);
-    gap: 16px;
-    padding: 16px;
-    flex: 1;
-    min-height: 0;
-  }
-
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px;
-    overflow: auto;
-  }
-  .panel.side-panel {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-block-end: 8px;
-  }
-
-  .tab-bar {
-    display: flex;
-    gap: 4px;
-  }
-  .tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    padding-inline: 12px;
-    padding-block: 6px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .tab:hover {
-    color: var(--text);
-    background: var(--panel-2);
-  }
-  .tab.active {
-    color: var(--text);
-    background: var(--panel-2);
-    border-color: var(--border);
-  }
-  .tab-badge {
-    min-width: 18px;
-    padding-inline: 5px;
-    border-radius: 999px;
-    background: var(--accent-strong);
-    color: white;
-    font-size: 10px;
-    line-height: 16px;
-    text-align: center;
-  }
-
-  .tab-panel {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  .test-results {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 8px;
-  }
-
-  .section-title {
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-size: 11px;
-    margin-block: 14px 8px;
-  }
-  .section-title.compact {
-    margin-block: 0 0;
-  }
-  .section-title.spaced {
-    margin-block-start: 16px;
-  }
-
-  .grid-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px 16px;
-  }
-  label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 13px;
-  }
-  label > span {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  label small {
-    color: var(--muted);
-    font-size: 11px;
-  }
-  input[type="text"],
-  input[type="number"],
-  select {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding-inline: 10px;
-    padding-block: 8px;
-    color: var(--text);
-    outline: none;
-  }
-  input:focus,
-  select:focus {
-    border-color: var(--accent);
-  }
-  input:disabled {
-    opacity: 0.5;
-  }
-  .checkbox-row {
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .actions {
-    display: flex;
-    gap: 10px;
-    margin-block-start: 18px;
-  }
-  .btn {
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding-inline: 14px;
-    padding-block: 8px;
-    font-weight: 600;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--accent);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .btn.primary {
-    background: var(--accent-strong);
-    border-color: var(--accent-strong);
-    color: white;
-  }
-  .btn.danger {
-    background: #5a2030;
-    border-color: #7a2a40;
-    color: #ffd0d0;
-  }
-  .btn-link {
-    background: transparent;
-    border: none;
-    color: var(--accent);
-    font-size: 12px;
-    padding: 0;
-  }
-
-  .log-list {
-    direction: ltr;
-    text-align: left;
-    unicode-bidi: isolate;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 8px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
-      "Courier New", monospace;
-    font-size: 12px;
-    font-feature-settings: normal;
-  }
-  .empty {
-    color: var(--muted);
-    text-align: center;
-    padding-block: 12px;
-  }
-  .log-line {
-    display: flex;
-    flex-direction: row;
-    gap: 10px;
-    padding-block: 2px;
-  }
-  .log-time {
-    color: var(--muted);
-    flex-shrink: 0;
-  }
-  .log-info .log-msg {
-    color: var(--text);
-  }
-  .log-error .log-msg {
-    color: var(--err);
-  }
-  .log-warn .log-msg {
-    color: var(--warn);
-  }
-  .log-debug .log-msg {
-    color: var(--muted);
-  }
-
-  .test-preflight {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    font-size: 12px;
-    color: var(--muted);
-    margin-block: 8px;
-  }
-  .test-preflight-note {
-    color: var(--warn);
-  }
-  .test-summary-counts {
-    margin-inline-start: auto;
-    color: var(--text);
-  }
-
-  .test-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-  }
-  .test-table th,
-  .test-table td {
-    text-align: start;
-    padding: 6px 8px;
-    border-block-end: 1px solid var(--border);
-  }
-  .test-table th {
-    color: var(--muted);
-    font-weight: 600;
-  }
-  td.pass {
-    color: var(--ok);
-    font-weight: 600;
-  }
-  td.fail {
-    color: var(--err);
-    font-weight: 600;
-  }
+  .topbar{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}.brand-title{font-weight:700;font-size:16px}.brand-subtitle{color:var(--muted);font-size:12px}.topbar-spacer{flex:1}.status-pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.running .dot{background:var(--ok)}.testing .dot{background:var(--warn)}.status-detail{color:var(--muted);margin-inline-start:6px}.lang-switch{display:flex;align-items:center;gap:8px}.lang-switch label{color:var(--muted);font-size:12px}.lang-switch select,.lang-switch input{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px}
+  .layout{display:grid;grid-template-columns:minmax(380px,1fr) minmax(360px,1fr);gap:16px;padding:16px;flex:1;min-height:0}.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;overflow:auto}.side-panel{display:flex;flex-direction:column;overflow:hidden}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.section-title{font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin:14px 0 8px}.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}label{display:flex;flex-direction:column;gap:4px;font-size:13px}label>span{color:var(--muted);font-size:12px}label small{color:var(--muted);font-size:11px}input[type=text],input[type=number],select{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);outline:none}input:focus,select:focus{border-color:var(--accent)}input:disabled{opacity:.5}.checkbox-row{flex-direction:row;align-items:center;gap:8px}
+  .preset-box{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-bottom:12px}.preset-row{display:flex;gap:10px;align-items:end}.preset-select{flex:1}.preset-actions{display:flex;gap:6px;flex-wrap:wrap}.preset-editor{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-top:10px;align-items:end}.btn{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;font-weight:600}.btn:hover:not(:disabled){border-color:var(--accent)}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.primary{background:var(--accent-strong);border-color:var(--accent-strong);color:white}.btn.danger{background:#5a2030;border-color:#7a2a40;color:#ffd0d0}.btn-link{background:transparent;border:0;color:var(--accent);font-size:12px}.actions{display:flex;gap:10px;margin-top:18px}.tab-bar{display:flex;gap:4px}.tab{background:transparent;color:var(--muted);border:1px solid transparent;border-radius:var(--radius);padding:6px 12px;font-weight:600}.tab.active,.tab:hover{color:var(--text);background:var(--panel-2);border-color:var(--border)}.tab-badge{margin-inline-start:4px;padding:2px 6px;border-radius:999px;background:var(--accent-strong);color:white;font-size:10px}.tab-panel{flex:1;min-height:0;overflow:auto}.log-list,.test-results{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px}.empty{color:var(--muted);text-align:center;padding:12px}.log-line{display:flex;gap:10px;padding:2px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.log-time{color:var(--muted);flex-shrink:0}.log-error{color:var(--err)}.log-warn{color:var(--warn)}.test-preflight{font-size:12px;color:var(--muted);margin:8px}.test-table{width:100%;border-collapse:collapse;font-size:12px}.test-table th,.test-table td{text-align:start;padding:6px 8px;border-bottom:1px solid var(--border)}.test-table th{color:var(--muted)}td.pass{color:var(--ok);font-weight:600}td.fail{color:var(--err);font-weight:600}
+  @media(max-width:900px){.layout{grid-template-columns:1fr}.preset-editor{grid-template-columns:1fr}.preset-row{flex-direction:column;align-items:stretch}}
 </style>
