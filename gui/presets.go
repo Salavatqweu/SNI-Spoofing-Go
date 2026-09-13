@@ -39,7 +39,11 @@ func validateSniPreset(p SniPreset) error {
 
 func copyPresets(in []SniPreset) []SniPreset {
 	out := append([]SniPreset(nil), in...)
-	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].FakeSNI) < strings.ToLower(out[j].FakeSNI) })
+	sort.SliceStable(out, func(i, j int) bool {
+		ki := strings.ToLower(out[i].FakeSNI) + "\x00" + out[i].Upstream
+		kj := strings.ToLower(out[j].FakeSNI) + "\x00" + out[j].Upstream
+		return ki < kj
+	})
 	return out
 }
 
@@ -83,28 +87,34 @@ func (a *App) SaveSniPreset(preset SniPreset) ([]SniPreset, error) {
 	if err != nil { return nil, err }
 	presets, err := readSniPresets(path)
 	if err != nil { return nil, err }
-	key := strings.ToLower(strings.TrimSpace(preset.FakeSNI))
+
+	fakeSNI := strings.TrimSpace(preset.FakeSNI)
+	upstream := strings.TrimSpace(preset.Upstream)
+	fakeKey := strings.ToLower(fakeSNI)
 	found := false
 	for i := range presets {
-		if strings.ToLower(presets[i].FakeSNI) == key {
-			presets[i] = SniPreset{FakeSNI: strings.TrimSpace(preset.FakeSNI), Upstream: strings.TrimSpace(preset.Upstream)}
+		if strings.ToLower(presets[i].FakeSNI) == fakeKey && presets[i].Upstream == upstream {
+			presets[i] = SniPreset{FakeSNI: fakeSNI, Upstream: upstream}
 			found = true
 			break
 		}
 	}
-	if !found { presets = append(presets, SniPreset{FakeSNI: strings.TrimSpace(preset.FakeSNI), Upstream: strings.TrimSpace(preset.Upstream)}) }
+	if !found { presets = append(presets, SniPreset{FakeSNI: fakeSNI, Upstream: upstream}) }
 	if err := writeSniPresets(path, presets); err != nil { return nil, err }
 	return copyPresets(presets), nil
 }
 
-func (a *App) DeleteSniPreset(fakeSNI string) ([]SniPreset, error) {
+func (a *App) DeleteSniPreset(fakeSNI, upstream string) ([]SniPreset, error) {
 	path, err := a.presetsPath()
 	if err != nil { return nil, err }
 	presets, err := readSniPresets(path)
 	if err != nil { return nil, err }
-	key := strings.ToLower(strings.TrimSpace(fakeSNI))
+	fakeKey := strings.ToLower(strings.TrimSpace(fakeSNI))
+	upstreamKey := strings.TrimSpace(upstream)
 	filtered := presets[:0]
-	for _, p := range presets { if strings.ToLower(p.FakeSNI) != key { filtered = append(filtered, p) } }
+	for _, p := range presets {
+		if strings.ToLower(p.FakeSNI) != fakeKey || p.Upstream != upstreamKey { filtered = append(filtered, p) }
+	}
 	if err := writeSniPresets(path, filtered); err != nil { return nil, err }
 	return copyPresets(filtered), nil
 }
