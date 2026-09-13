@@ -1,168 +1,31 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { _, locale } from "svelte-i18n";
-  import { GetDefaultConfig, UTLSPresets, InjectorModes, Start, Stop, Status, RunTest, GetSniPresets, SaveSniPreset, DeleteSniPreset } from "../wailsjs/go/main/App.js";
+  import { GetDefaultConfig, SaveConfig, UTLSPresets, InjectorModes, Start, Stop, Status, RunTest, GetSniPresets, SaveSniPreset, DeleteSniPreset } from "../wailsjs/go/main/App.js";
   import { EventsOn, EventsOff } from "../wailsjs/runtime/runtime.js";
   import type { main } from "../wailsjs/go/models";
   import { appendLog, resetLogIds, type LogEntry } from "./logs";
-
-  type ProxyConfig = main.ProxyConfig;
-  type ProxyStatus = main.ProxyStatus;
-  type TestResult = main.TestResult;
-  type TestSummary = main.TestSummary;
-  type SniPreset = main.SniPreset;
-
-  let cfg: ProxyConfig | null = null;
-  let utlsList: string[] = [];
-  let injectorList: string[] = [];
-  let presets: SniPreset[] = [];
-  let selectedPreset = "";
-  let presetFakeSNI = "";
-  let presetUpstream = "";
-  let editingPreset = false;
-  let status: ProxyStatus = { running: false, testing: false, listenAddr: "" };
-  let logs: LogEntry[] = [];
-  let testResults: TestResult[] = [];
-  let testSummary: TestSummary | null = null;
-  let busy = false;
-  let rightPanelTab: "logs" | "results" = "logs";
-
-  function pushLog(entry: Omit<LogEntry, "id">) { logs = appendLog(logs, entry); }
-  function pushError(err: unknown) { pushLog({ ts: Date.now(), level: "error", message: err instanceof Error ? err.message : String(err) }); }
-
-  onMount(async () => {
-    try {
-      cfg = await GetDefaultConfig();
-      utlsList = await UTLSPresets();
-      injectorList = await InjectorModes();
-      presets = await GetSniPresets();
-      status = await Status();
-      if (presets.length) selectPreset(presets[0]);
-    } catch (err) { pushError(err); }
-    EventsOn("log", (e: { level: string; message: string }) => pushLog({ ts: Date.now(), level: e.level, message: e.message }));
-    EventsOn("status", (s: ProxyStatus) => status = s);
-    EventsOn("test_result", (row: TestResult) => testResults = [...testResults, row]);
-  });
-
-  onDestroy(() => { EventsOff("log"); EventsOff("status"); EventsOff("test_result"); });
-
-  function selectPreset(p: SniPreset) {
-    selectedPreset = p.fakeSni;
-    presetFakeSNI = p.fakeSni;
-    presetUpstream = p.upstream;
-    editingPreset = false;
-    if (cfg) { cfg.fakeSni = p.fakeSni; cfg.connect = `${p.upstream}:443`; }
-  }
-
-  function onPresetSelect(ev: Event) {
-    const value = (ev.target as HTMLSelectElement).value;
-    const p = presets.find(x => x.fakeSni === value);
-    if (p) selectPreset(p);
-  }
-
-  function newPreset() {
-    selectedPreset = ""; presetFakeSNI = ""; presetUpstream = ""; editingPreset = true;
-  }
-
-  function editSelectedPreset() {
-    if (!selectedPreset) return;
-    editingPreset = true;
-  }
-
-  async function savePreset() {
-    if (!presetFakeSNI.trim() || !presetUpstream.trim()) return;
-    try {
-      presets = await SaveSniPreset({ fakeSni: presetFakeSNI.trim(), upstream: presetUpstream.trim() });
-      const p = presets.find(x => x.fakeSni.toLowerCase() === presetFakeSNI.trim().toLowerCase());
-      if (p) selectPreset(p);
-    } catch (err) { pushError(err); }
-  }
-
-  async function deleteSelectedPreset() {
-    if (!selectedPreset) return;
-    try {
-      presets = await DeleteSniPreset(selectedPreset);
-      selectedPreset = ""; presetFakeSNI = ""; presetUpstream = "";
-      if (presets.length) selectPreset(presets[0]);
-    } catch (err) { pushError(err); }
-  }
-
-  async function onStart() {
-    if (!cfg) return; busy = true; rightPanelTab = "logs";
-    try { await Start(cfg); } catch (err) { pushError(err); } finally { busy = false; }
-  }
-  async function onStop() {
-    busy = true; try { await Stop(); } catch (err) { pushError(err); } finally { busy = false; }
-  }
-  async function onRunTest() {
-    if (!cfg) return; busy = true; testResults = []; testSummary = null; rightPanelTab = "results";
-    try { testSummary = await RunTest(cfg); if (testSummary.results?.length > testResults.length) testResults = testSummary.results; }
-    catch (err) { pushError(err); } finally { busy = false; }
-  }
-  function onLocaleChange(ev: Event) { locale.set((ev.target as HTMLSelectElement).value); }
-  function clearLogs() { resetLogIds(); logs = []; }
-  const logTimeFormatter = new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  function formatTime(ts: number): string { return logTimeFormatter.format(new Date(ts)); }
+  type ProxyConfig = main.ProxyConfig; type ProxyStatus = main.ProxyStatus; type TestResult = main.TestResult; type TestSummary = main.TestSummary; type SniPreset = main.SniPreset;
+  let cfg: ProxyConfig | null = null; let utlsList:string[]=[]; let injectorList:string[]=[]; let presets:SniPreset[]=[]; let selectedPreset=""; let presetFakeSNI=""; let presetUpstream=""; let editingPreset=false; let status:ProxyStatus={running:false,testing:false,listenAddr:""}; let logs:LogEntry[]=[]; let testResults:TestResult[]=[]; let testSummary:TestSummary|null=null; let busy=false; let saving=false; let rightPanelTab:"logs"|"results"="logs";
+  const presetKey=(p:SniPreset)=>`${p.fakeSni}\u0000${p.upstream}`;
+  function pushLog(e:Omit<LogEntry,"id">){logs=appendLog(logs,e)} function pushError(e:unknown){pushLog({ts:Date.now(),level:"error",message:e instanceof Error?e.message:String(e)})}
+  onMount(async()=>{try{cfg=await GetDefaultConfig();utlsList=await UTLSPresets();injectorList=await InjectorModes();presets=await GetSniPresets();status=await Status();if(presets.length)selectPreset(presets[0])}catch(e){pushError(e)} EventsOn("log",(e:{level:string;message:string})=>pushLog({ts:Date.now(),level:e.level,message:e.message}));EventsOn("status",(s:ProxyStatus)=>status=s);EventsOn("test_result",(r:TestResult)=>testResults=[...testResults,r])});
+  onDestroy(()=>{EventsOff("log");EventsOff("status");EventsOff("test_result")});
+  function selectPreset(p:SniPreset){selectedPreset=presetKey(p);presetFakeSNI=p.fakeSni;presetUpstream=p.upstream;editingPreset=false;if(cfg){cfg.fakeSni=p.fakeSni;cfg.connect=`${p.upstream}:443`}}
+  function onPresetSelect(e:Event){const v=(e.target as HTMLSelectElement).value;const p=presets.find(x=>presetKey(x)===v);if(p)selectPreset(p)}
+  function newPreset(){selectedPreset="";presetFakeSNI="";presetUpstream="";editingPreset=true} function editSelectedPreset(){if(selectedPreset)editingPreset=true}
+  async function savePreset(){if(!presetFakeSNI.trim()||!presetUpstream.trim())return;try{presets=await SaveSniPreset({fakeSni:presetFakeSNI.trim(),upstream:presetUpstream.trim()});const p=presets.find(x=>x.fakeSni.toLowerCase()===presetFakeSNI.trim().toLowerCase()&&x.upstream===presetUpstream.trim());if(p)selectPreset(p)}catch(e){pushError(e)}}
+  async function deleteSelectedPreset(){const p=presets.find(x=>presetKey(x)===selectedPreset);if(!p)return;try{presets=await DeleteSniPreset(p.fakeSni,p.upstream);selectedPreset="";presetFakeSNI="";presetUpstream="";if(presets.length)selectPreset(presets[0])}catch(e){pushError(e)}}
+  async function onSaveConfig(){if(!cfg||saving)return;saving=true;try{await SaveConfig(cfg);pushLog({ts:Date.now(),level:"info",message:"Configuration saved to config.ini"})}catch(e){pushError(e)}finally{saving=false}}
+  async function onStart(){if(!cfg)return;busy=true;rightPanelTab="logs";try{await Start(cfg)}catch(e){pushError(e)}finally{busy=false}} async function onStop(){busy=true;try{await Stop()}catch(e){pushError(e)}finally{busy=false}}
+  async function onRunTest(){if(!cfg)return;busy=true;testResults=[];testSummary=null;rightPanelTab="results";try{testSummary=await RunTest(cfg);if(testSummary.results?.length>testResults.length)testResults=testSummary.results}catch(e){pushError(e)}finally{busy=false}}
+  function onLocaleChange(e:Event){locale.set((e.target as HTMLSelectElement).value)} function clearLogs(){resetLogIds();logs=[]} const tf=new Intl.DateTimeFormat("en",{hour:"2-digit",minute:"2-digit",second:"2-digit"}); function formatTime(ts:number){return tf.format(new Date(ts))}
 </script>
-
-<header class="topbar">
-  <div><div class="brand-title">{$_("app.title")}</div><div class="brand-subtitle">{$_("app.subtitle")}</div></div>
-  <div class="topbar-spacer"></div>
-  <div class="status-pill" class:running={status.running} class:testing={status.testing}><span class="dot"></span>{status.testing ? $_("status.testing") : status.running ? $_("status.running") : $_("status.stopped")}{#if status.running && status.listenAddr}<span class="status-detail">{status.listenAddr}</span>{/if}</div>
-  <div class="lang-switch"><label for="lang">{$_("lang.label")}</label><select id="lang" value={$locale} on:change={onLocaleChange}><option value="en">English</option><option value="fa">فارسی</option></select></div>
-</header>
-
-<main class="layout">
-  <section class="panel">
-    {#if cfg}
-      <div class="section-title">{$_("form.section_connection")}</div>
-      <div class="preset-box">
-        <div class="preset-row">
-          <label class="preset-select"><span>{$_("preset.select")}</span><select value={selectedPreset} on:change={onPresetSelect}><option value="">{$_("preset.choose")}</option>{#each presets as p}<option value={p.fakeSni}>{p.fakeSni} → {p.upstream}</option>{/each}</select></label>
-          <div class="preset-actions"><button class="btn" on:click={newPreset}>{$_("preset.add")}</button><button class="btn" on:click={editSelectedPreset} disabled={!selectedPreset}>{$_("preset.edit")}</button><button class="btn danger" on:click={deleteSelectedPreset} disabled={!selectedPreset}>{$_("preset.delete")}</button></div>
-        </div>
-        {#if editingPreset}
-          <div class="preset-editor">
-            <label><span>{$_("preset.fake_sni")}</span><input type="text" bind:value={presetFakeSNI} placeholder="example.com" /></label>
-            <label><span>{$_("preset.upstream")}</span><input type="text" bind:value={presetUpstream} placeholder="1.2.3.4" /></label>
-            <button class="btn primary" on:click={savePreset}>{$_("preset.save")}</button>
-          </div>
-        {/if}
-      </div>
-      <div class="grid-2">
-        <label><span>{$_("form.listen")}</span><input type="text" bind:value={cfg.listen} placeholder="127.0.0.1:40443" /><small>{$_("form.listen_help")}</small></label>
-        <label><span>{$_("form.connect")}</span><input type="text" bind:value={cfg.connect} placeholder="host:443" /><small>{$_("form.connect_help")}</small></label>
-        <label><span>{$_("form.fake_sni")}</span><input type="text" bind:value={cfg.fakeSni} placeholder="hcaptcha.com" /><small>{$_("form.fake_sni_help")}</small></label>
-        <label><span>{$_("form.utls")}</span><select bind:value={cfg.utls}>{#each utlsList as p}<option value={p}>{p}</option>{/each}</select></label>
-      </div>
-
-      <div class="section-title">{$_("form.section_injection")}</div>
-      <div class="grid-2">
-        <label><span>{$_("form.injector")}</span><select bind:value={cfg.injector}>{#each injectorList as m}<option value={m}>{m}</option>{/each}</select></label>
-        <label><span>{$_("form.fake_repeat")}</span><input type="number" min="1" bind:value={cfg.fakeRepeat} /></label>
-        <label><span>{$_("form.fake_delay")}</span><input type="number" min="0" bind:value={cfg.fakeDelayMs} /></label>
-        <label><span>{$_("form.ack_timeout")}</span><input type="number" min="1" bind:value={cfg.ackTimeoutMs} /></label>
-      </div>
-
-      <div class="section-title">{$_("form.section_fragmentation")}</div>
-      <div class="grid-2">
-        <label class="checkbox-row"><input type="checkbox" bind:checked={cfg.enableFragment} /><span>{$_("form.enable_fragment")}</span></label><span></span>
-        <label><span>{$_("form.fragment_delay")}</span><input type="number" min="0" bind:value={cfg.fragmentDelayMs} disabled={!cfg.enableFragment} /></label>
-        <label><span>{$_("form.sni_chunk")}</span><input type="number" min="0" bind:value={cfg.sniChunk} disabled={!cfg.enableFragment} /></label>
-      </div>
-      <div class="actions">{#if status.running || status.testing}<button class="btn danger" on:click={onStop} disabled={busy && !status.testing}>{status.testing ? $_("actions.cancel_test") : $_("actions.stop")}</button>{:else}<button class="btn primary" on:click={onStart} disabled={busy}>{$_("actions.start")}</button>{/if}<button class="btn" on:click={onRunTest} disabled={busy || status.running || status.testing}>{$_("actions.test")}</button></div>
-    {/if}
-  </section>
-
-  <section class="panel side-panel">
-    <div class="panel-header"><div class="tab-bar"><button type="button" class="tab" class:active={rightPanelTab === "logs"} on:click={() => rightPanelTab = "logs"}>{$_("panel.tab_logs")}</button><button type="button" class="tab" class:active={rightPanelTab === "results"} on:click={() => rightPanelTab = "results"}>{$_("panel.tab_results")}{#if testResults.length}<span class="tab-badge">{testResults.length}</span>{/if}</button></div>{#if rightPanelTab === "logs"}<button class="btn-link" on:click={clearLogs}>{$_("actions.clear_logs")}</button>{/if}</div>
-    {#if rightPanelTab === "logs"}<div class="tab-panel log-list" dir="ltr">{#if !logs.length}<div class="empty">{$_("logs.empty")}</div>{:else}{#each logs as line (line.id)}<div class="log-line"><span class="log-time">{formatTime(line.ts)}</span><span class="log-msg log-{line.level}">{line.message}</span></div>{/each}{/if}</div>{:else}<div class="tab-panel test-results">{#if testSummary}<div class="test-preflight"><span>{$_("test.pass")}: {testSummary.passed} / {$_("test.fail")}: {testSummary.failed}</span></div>{/if}{#if !testResults.length}<div class="empty">{$_("test.empty")}</div>{:else}<table class="test-table"><thead><tr><th>{$_("test.col_utls")}</th><th>{$_("test.col_repeat")}</th><th>{$_("test.col_fragment")}</th><th>{$_("test.col_result")}</th></tr></thead><tbody>{#each testResults as r}<tr><td>{r.utls}</td><td>{r.fakeRepeat}</td><td>{r.enableFragment ? $_("test.on") : $_("test.off")}</td><td class:pass={r.pass} class:fail={!r.pass}>{r.pass ? $_("test.pass") : $_("test.fail")}</td></tr>{/each}</tbody></table>{/if}</div>{/if}
-  </section>
-</main>
-
-<style>
-  .topbar{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}.brand-title{font-weight:700;font-size:16px}.brand-subtitle{color:var(--muted);font-size:12px}.topbar-spacer{flex:1}.status-pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.running .dot{background:var(--ok)}.testing .dot{background:var(--warn)}.status-detail{color:var(--muted);margin-inline-start:6px}.lang-switch{display:flex;align-items:center;gap:8px}.lang-switch label{color:var(--muted);font-size:12px}.lang-switch select,.lang-switch input{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px}
-  .layout{display:grid;grid-template-columns:minmax(380px,1fr) minmax(360px,1fr);gap:16px;padding:16px;flex:1;min-height:0}.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;overflow:auto}.side-panel{display:flex;flex-direction:column;overflow:hidden}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.section-title{font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin:14px 0 8px}.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}label{display:flex;flex-direction:column;gap:4px;font-size:13px}label>span{color:var(--muted);font-size:12px}label small{color:var(--muted);font-size:11px}input[type=text],input[type=number],select{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);outline:none}input:focus,select:focus{border-color:var(--accent)}input:disabled{opacity:.5}.checkbox-row{flex-direction:row;align-items:center;gap:8px}
-  .preset-box{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-bottom:12px}.preset-row{display:flex;gap:10px;align-items:end}.preset-select{flex:1}.preset-actions{display:flex;gap:6px;flex-wrap:wrap}.preset-editor{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-top:10px;align-items:end}.btn{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;font-weight:600}.btn:hover:not(:disabled){border-color:var(--accent)}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.primary{background:var(--accent-strong);border-color:var(--accent-strong);color:white}.btn.danger{background:#5a2030;border-color:#7a2a40;color:#ffd0d0}.btn-link{background:transparent;border:0;color:var(--accent);font-size:12px}.actions{display:flex;gap:10px;margin-top:18px}.tab-bar{display:flex;gap:4px}.tab{background:transparent;color:var(--muted);border:1px solid transparent;border-radius:var(--radius);padding:6px 12px;font-weight:600}.tab.active,.tab:hover{color:var(--text);background:var(--panel-2);border-color:var(--border)}.tab-badge{margin-inline-start:4px;padding:2px 6px;border-radius:999px;background:var(--accent-strong);color:white;font-size:10px}.tab-panel{flex:1;min-height:0;overflow:auto}.log-list,.test-results{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px}.empty{color:var(--muted);text-align:center;padding:12px}.log-line{display:flex;gap:10px;padding:2px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.log-time{color:var(--muted);flex-shrink:0}.log-error{color:var(--err)}.log-warn{color:var(--warn)}.test-preflight{font-size:12px;color:var(--muted);margin:8px}.test-table{width:100%;border-collapse:collapse;font-size:12px}.test-table th,.test-table td{text-align:start;padding:6px 8px;border-bottom:1px solid var(--border)}.test-table th{color:var(--muted)}td.pass{color:var(--ok);font-weight:600}td.fail{color:var(--err);font-weight:600}
-  @media(max-width:900px){.layout{grid-template-columns:1fr}.preset-editor{grid-template-columns:1fr}.preset-row{flex-direction:column;align-items:stretch}}
-</style>
+<header class="topbar"><div><div class="brand-title">{$_("app.title")}</div><div class="brand-subtitle">{$_("app.subtitle")}</div></div><div class="topbar-spacer"></div><div class="status-pill" class:running={status.running} class:testing={status.testing}><span class="dot"></span>{status.testing?$_("status.testing"):status.running?$_("status.running"):$_("status.stopped")}{#if status.running&&status.listenAddr}<span class="status-detail">{status.listenAddr}</span>{/if}</div><div class="lang-switch"><label for="lang">{$_("lang.label")}</label><select id="lang" value={$locale} on:change={onLocaleChange}><option value="en">English</option><option value="fa">فارسی</option></select></div></header>
+<main class="layout"><section class="panel">{#if cfg}<div class="section-title">{$_("form.section_connection")}</div><div class="preset-box"><div class="preset-row"><label class="preset-select"><span>{$_("preset.select")}</span><select value={selectedPreset} on:change={onPresetSelect}><option value="">{$_("preset.choose")}</option>{#each presets as p}<option value={presetKey(p)}>{p.fakeSni} → {p.upstream}</option>{/each}</select></label><div class="preset-actions"><button class="btn" on:click={newPreset}>{$_("preset.add")}</button><button class="btn" on:click={editSelectedPreset} disabled={!selectedPreset}>{$_("preset.edit")}</button><button class="btn danger" on:click={deleteSelectedPreset} disabled={!selectedPreset}>{$_("preset.delete")}</button></div></div>{#if editingPreset}<div class="preset-editor"><label><span>{$_("preset.fake_sni")}</span><input type="text" bind:value={presetFakeSNI} placeholder="example.com" /></label><label><span>{$_("preset.upstream")}</span><input type="text" bind:value={presetUpstream} placeholder="1.2.3.4" /></label><button class="btn primary" on:click={savePreset}>{$_("preset.save")}</button></div>{/if}</div>
+<div class="grid-2"><label><span>{$_("form.listen")}</span><input type="text" bind:value={cfg.listen} placeholder="127.0.0.1:40443" /><small>{$_("form.listen_help")}</small></label><label><span>{$_("form.connect")}</span><input type="text" bind:value={cfg.connect} placeholder="host:443" /><small>{$_("form.connect_help")}</small></label><label><span>{$_("form.fake_sni")}</span><input type="text" bind:value={cfg.fakeSni} placeholder="hcaptcha.com" /><small>{$_("form.fake_sni_help")}</small></label><label><span>{$_("form.utls")}</span><select bind:value={cfg.utls}>{#each utlsList as p}<option value={p}>{p}</option>{/each}</select></label></div>
+<div class="section-title">{$_("form.section_injection")}</div><div class="grid-2"><label><span>{$_("form.injector")}</span><select bind:value={cfg.injector}>{#each injectorList as m}<option value={m}>{m}</option>{/each}</select></label><label><span>{$_("form.fake_repeat")}</span><input type="number" min="1" bind:value={cfg.fakeRepeat} /></label><label><span>{$_("form.fake_delay")}</span><input type="number" min="0" bind:value={cfg.fakeDelayMs} /></label><label><span>{$_("form.ack_timeout")}</span><input type="number" min="1" bind:value={cfg.ackTimeoutMs} /></label></div>
+<div class="section-title">{$_("form.section_fragmentation")}</div><div class="grid-2"><label class="checkbox-row"><input type="checkbox" bind:checked={cfg.enableFragment}/><span>{$_("form.enable_fragment")}</span></label><span></span><label><span>{$_("form.fragment_delay")}</span><input type="number" min="0" bind:value={cfg.fragmentDelayMs} disabled={!cfg.enableFragment}/></label><label><span>{$_("form.sni_chunk")}</span><input type="number" min="0" bind:value={cfg.sniChunk} disabled={!cfg.enableFragment}/></label></div>
+<div class="actions"><button class="btn primary" on:click={onSaveConfig} disabled={saving||busy}>{saving?"Saving…":$_("actions.save")}</button>{#if status.running||status.testing}<button class="btn danger" on:click={onStop} disabled={busy&&!status.testing}>{status.testing?$_("actions.cancel_test"):$_("actions.stop")}</button>{:else}<button class="btn primary" on:click={onStart} disabled={busy}>{$_("actions.start")}</button>{/if}<button class="btn" on:click={onRunTest} disabled={busy||status.running||status.testing}>{$_("actions.test")}</button></div>{/if}</section>
+<section class="panel side-panel"><div class="panel-header"><div class="tab-bar"><button type="button" class="tab" class:active={rightPanelTab==="logs"} on:click={()=>rightPanelTab="logs"}>{$_("panel.tab_logs")}</button><button type="button" class="tab" class:active={rightPanelTab==="results"} on:click={()=>rightPanelTab="results"}>{$_("panel.tab_results")}{#if testResults.length}<span class="tab-badge">{testResults.length}</span>{/if}</button></div>{#if rightPanelTab==="logs"}<button class="btn-link" on:click={clearLogs}>{$_("actions.clear_logs")}</button>{/if}</div>{#if rightPanelTab==="logs"}<div class="tab-panel log-list" dir="ltr">{#if !logs.length}<div class="empty">{$_("logs.empty")}</div>{:else}{#each logs as line (line.id)}<div class="log-line"><span class="log-time">{formatTime(line.ts)}</span><span class="log-msg log-{line.level}">{line.message}</span></div>{/each}{/if}</div>{:else}<div class="tab-panel test-results">{#if testSummary}<div class="test-preflight"><span>{$_("test.pass")}: {testSummary.passed} / {$_("test.fail")}: {testSummary.failed}</span></div>{/if}{#if !testResults.length}<div class="empty">{$_("test.empty")}</div>{:else}<table class="test-table"><thead><tr><th>{$_("test.col_utls")}</th><th>{$_("test.col_repeat")}</th><th>{$_("test.col_fragment")}</th><th>{$_("test.col_result")}</th></tr></thead><tbody>{#each testResults as r}<tr><td>{r.utls}</td><td>{r.fakeRepeat}</td><td>{r.enableFragment?$_("test.on"):$_("test.off")}</td><td class:pass={r.pass} class:fail={!r.pass}>{r.pass?$_("test.pass"):$_("test.fail")}</td></tr>{/each}</tbody></table>{/if}</div>{/if}</section></main>
+<style>.topbar{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}.brand-title{font-weight:700;font-size:16px}.brand-subtitle{color:var(--muted);font-size:12px}.topbar-spacer{flex:1}.status-pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);font-size:13px}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.running .dot{background:var(--ok)}.testing .dot{background:var(--warn)}.status-detail{color:var(--muted);margin-inline-start:6px}.lang-switch{display:flex;align-items:center;gap:8px}.lang-switch label{color:var(--muted);font-size:12px}.lang-switch select{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px}.layout{display:grid;grid-template-columns:minmax(380px,1fr) minmax(360px,1fr);gap:16px;padding:16px;flex:1;min-height:0}.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px;overflow:auto}.side-panel{display:flex;flex-direction:column;overflow:hidden}.panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}.section-title{font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin:14px 0 8px}.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}label{display:flex;flex-direction:column;gap:4px;font-size:13px}label>span{color:var(--muted);font-size:12px}label small{color:var(--muted);font-size:11px}input[type=text],input[type=number],select{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;color:var(--text);outline:none}input:focus,select:focus{border-color:var(--accent)}input:disabled{opacity:.5}.checkbox-row{flex-direction:row;align-items:center;gap:8px}.preset-box{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:10px;margin-bottom:12px}.preset-row{display:flex;gap:10px;align-items:end}.preset-select{flex:1}.preset-actions{display:flex;gap:6px;flex-wrap:wrap}.preset-editor{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;margin-top:10px;align-items:end}.btn{background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;font-weight:600}.btn:hover:not(:disabled){border-color:var(--accent)}.btn:disabled{opacity:.5;cursor:not-allowed}.btn.primary{background:var(--accent-strong);border-color:var(--accent-strong);color:white}.btn.danger{background:#5a2030;border-color:#7a2a40;color:#ffd0d0}.btn-link{background:transparent;border:0;color:var(--accent);font-size:12px}.actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}.tab-bar{display:flex;gap:4px}.tab{background:transparent;color:var(--muted);border:1px solid transparent;border-radius:var(--radius);padding:6px 12px;font-weight:600}.tab.active,.tab:hover{color:var(--text);background:var(--panel-2);border-color:var(--border)}.tab-badge{margin-inline-start:4px;padding:2px 6px;border-radius:999px;background:var(--accent-strong);color:white;font-size:10px}.tab-panel{flex:1;min-height:0;overflow:auto}.log-list,.test-results{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px}.empty{color:var(--muted);text-align:center;padding:12px}.log-line{display:flex;gap:10px;padding:2px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.log-time{color:var(--muted);flex-shrink:0}.log-error{color:var(--err)}.log-warn{color:var(--warn)}.test-preflight{font-size:12px;color:var(--muted);margin:8px}.test-table{width:100%;border-collapse:collapse;font-size:12px}.test-table th,.test-table td{text-align:start;padding:6px 8px;border-bottom:1px solid var(--border)}.test-table th{color:var(--muted)}td.pass{color:var(--ok);font-weight:600}td.fail{color:var(--err);font-weight:600}@media(max-width:900px){.layout{grid-template-columns:1fr}.preset-editor{grid-template-columns:1fr}.preset-row{flex-direction:column;align-items:stretch}}</style>
